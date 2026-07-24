@@ -6,12 +6,18 @@ propia mecánica de skill, jugás al **mejor de 3** y subís de liga por trofeos
 
 > Diseño, decisiones y hoja de ruta: ver **[GAME_DESIGN.md](./GAME_DESIGN.md)**.
 
-## Cómo correrlo
+## Cómo probarlo
 
-Es HTML/JS/Canvas sin build, pero usa **ES modules**, así que hay que servirlo
-por HTTP (abrir el `index.html` con doble clic **no** funciona por CORS).
+### ⭐ Opción A — un solo archivo, sin instalar nada (la más fácil)
+Abrí **[`standalone.html`](./standalone.html)** con doble clic. Es el juego
+entero (JS + CSS) en un solo archivo autocontenido: funciona desde el disco
+(`file://`), sin servidor. Para que lo pruebe tu amigo, **mandale ese archivo
+por WhatsApp/Drive** y que lo abra en el navegador del cel (en iPhone: guardar
+en Archivos → abrir con Safari).
 
-**Opción A — servidor local (para probar en la compu o en el cel por wifi):**
+### Opción B — servidor local (para desarrollar sobre el código modular)
+El `index.html` usa **ES modules**, así que necesita HTTP (doble clic **no**
+funciona por CORS):
 ```bash
 cd game
 python3 -m http.server 8099
@@ -20,9 +26,19 @@ python3 -m http.server 8099
 ```
 Cualquier server estático sirve (`npx serve`, `http-server`, etc.).
 
-**Opción B — GitHub Pages (lo más cómodo para que tu amigo lo pruebe en el cel):**
-1. Settings → Pages → Deploy from branch → rama y carpeta `/root` (o `/docs`).
-2. Entrá a `https://<usuario>.github.io/<repo>/game/`.
+### Opción C — GitHub Pages (link público para compartir)
+1. Settings → Pages → Deploy from branch → elegí la rama y carpeta `/ (root)`.
+2. Entrá a `https://<usuario>.github.io/<repo>/game/standalone.html`.
+
+### Regenerar `standalone.html`
+Se genera bundleando el código modular. Si cambiás algo en `src/`:
+```bash
+cd game
+npx esbuild src/main.js --bundle --format=iife --minify --outfile=bundle.tmp.js
+# luego inline bundle.tmp.js dentro de un HTML con el CSS (o pedímelo y lo regenero)
+```
+> El código "fuente de verdad" es `src/` + `index.html`. `standalone.html` es
+> solo un empaquetado para compartir fácil.
 
 ## Controles
 
