@@ -1,0 +1,291 @@
+From d24ad829a7b5d4ca1336c07726560fe123be746f Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 4 Aug 2026 19:05:37 +0000
+Subject: [PATCH] Add experimental 3-a-side match mode (route-A prototype)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Small-sided prototype: each team fields GK + 2 outfielders. The 8 surplus
+outfielders per team are ghosted at pitch entry using the existing red-card
+machinery (sentAway=1, cards=-1, parked at the sent-off spot), so every
+system that already excludes sent-off players — control election, pass
+targets, set-piece takers, break repositioning, wall math, the Mode3
+arrival wait — handles them unmodified.
+
+Port-side holes patched, each gated on SmallSided.Enabled so 11-a-side
+behaviour and the RNG stream stay byte-identical when off:
+- UpdatePlayers: in-play tactical repositioning had no sentAway gate
+  (the asm only checks it on the stoppage path)
+- UpdatePlayers: the port-only controlled-player re-election stand-in
+  could elect a parked ghost
+- Main: the renderer painted all 22 slots unconditionally
+- Bench: substitutions are gated off in 3v3 (bench slots would unghost)
+
+New 'mode' slot on the match-setup screen toggles 11v11 / 3v3.
+See docs/3v3-PROTOTYPE.md.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BBWqAr3SeaMUvGtiVjYV6N
+---
+ docs/3v3-PROTOTYPE.md                  | 44 ++++++++++++++++++++++
+ game/scripts/Main.cs                   | 22 +++++++++--
+ game/scripts/Sim/Port/Bench.cs         |  5 +++
+ game/scripts/Sim/Port/Kickoff.cs       | 18 +++++++++
+ game/scripts/Sim/Port/SmallSided.cs    | 51 ++++++++++++++++++++++++++
+ game/scripts/Sim/Port/UpdatePlayers.cs | 17 +++++++++
+ 6 files changed, 154 insertions(+), 3 deletions(-)
+ create mode 100644 docs/3v3-PROTOTYPE.md
+ create mode 100644 game/scripts/Sim/Port/SmallSided.cs
+
+diff --git a/docs/3v3-PROTOTYPE.md b/docs/3v3-PROTOTYPE.md
+new file mode 100644
+index 0000000..24cc5bd
+--- /dev/null
++++ b/docs/3v3-PROTOTYPE.md
+@@ -0,0 +1,44 @@
++# 3-a-side prototype (experimental)
++
++**Status:** route-A prototype (2026-08-04). One human + 5 AI players on a
++full-size pitch: each team fields its goalkeeper + 2 outfielders (ordinals
++2 and 3 — tactics rows 0 and 1 of the selected formation).
++
++## How it works
++
++Instead of resizing the 11-per-team engine, the 8 surplus outfielders per
++team are marked exactly like red-carded players (`sentAway = 1`,
++`cards = -1`) and parked off-pitch at match start
++(`Kickoff.InitPlayersBeforeEnteringPitch`). Every engine system that already
++excludes sent-off players — controlled-player election, pass-target
++election, set-piece taker scans, break repositioning, the free-kick wall
++math, the Mode3 arrival wait — then does the right thing unmodified. See
++`game/scripts/Sim/Port/SmallSided.cs` for the full list and the four
++port-side holes that needed explicit patches (in-play repositioning, the
++re-election stand-in, the renderer, the bench).
++
++With the mode **off** (the default), behaviour — including the RNG stream
++and the recorded golden traces — is byte-identical to 11-a-side.
++
++## How to try it
++
++1. Set up OpenSWOS normally (see the root `README.md`: Godot 4 + .NET, plus
++   your own SWOS 96/97 Amiga `.adf` files in `original_swos_adf/`).
++2. Start the game. On the match-setup screen, move focus down to the new
++   **`mode`** slot and press left/right to switch `11 v 11` → `3 v 3
++   (experimental)`.
++3. `opponent : AI`, then space to kick off. You control the nearest player
++   (classic SWOS switching) — GK + 2 outfielders — against a 3-man CPU team.
++4. The toggle is read at match start; flipping it mid-match does nothing
++   until the next match.
++
++## Known limitations (accepted for the prototype)
++
++- Full-size pitch — 3v3 feels sparse; a smaller pitch is a much bigger job.
++- No substitutions in 3v3 (the bench is gated off).
++- Restart formations use tactics rows 0-1, so the two outfielders line up
++  like a right back + right centre back; purpose-built 3v3 position tables
++  are route-B work.
++- When defending a free kick, both outfielders join the wall (the original
++  wall takes ordinals 2-5).
++- Penalty shootouts are untested in this mode.
+diff --git a/game/scripts/Main.cs b/game/scripts/Main.cs
+index ba7e5e0..6607e09 100644
+--- a/game/scripts/Main.cs
++++ b/game/scripts/Main.cs
+@@ -229,8 +229,8 @@ public partial class Main : Node2D
+     private readonly System.Random _pitchRng = new();
+     private int _homeTeamIndex = 0;
+     private int _awayTeamIndex = 1;
+-    private int _menuFocus = 0;        // 0=pitch, 1=home, 2=away, 3=opponent, 4=length, 5=speed
+-    private const int MenuSlotCount = 6;
++    private int _menuFocus = 0;        // 0=pitch, 1=home, 2=away, 3=opponent, 4=length, 5=speed, 6=mode
++    private const int MenuSlotCount = 7;
+ 
+     // Gameplay path selector. Formerly a menu toggle between the legacy hand-tuned
+     // sim and the SWOS mechanical port; the legacy sim is abandoned, so the port
+@@ -4110,6 +4110,14 @@ public partial class Main : Node2D
+             {
+                 var sprite = _portPlayerSprites[slot];
+                 if (sprite is null) continue;
++                // SmallSided ghosts are parked off-pitch and never re-enter —
++                // don't paint them (there's no sentAway check in this loop;
++                // real red cards still render while walking off).
++                if (OpenSwos.Sim.Port.SmallSided.IsGhostGlobalSlot(slot))
++                {
++                    sprite.Visible = false;
++                    continue;
++                }
+                 sprite.Visible = true;
+                 bool topTeam = slot < OpenSwos.SwosVm.PlayerSprite.TeamSize;
+                 bool isKeeper = (slot == OpenSwos.SwosVm.PlayerSprite.SlotGoalie1)
+@@ -4337,6 +4345,12 @@ public partial class Main : Node2D
+                         2);
+                     SaveSettings();
+                     break;
++                case 6:
++                    // Toggle 11-a-side ↔ experimental 3-a-side (SmallSided).
++                    OpenSwos.Sim.Port.SmallSided.Enabled =
++                        !OpenSwos.Sim.Port.SmallSided.Enabled;
++                    _menuHeldTicks = 0;
++                    break;
+             }
+         }
+ 
+@@ -4357,6 +4371,7 @@ public partial class Main : Node2D
+         string m3 = _menuFocus == 3 ? "> " : "  ";
+         string m4 = _menuFocus == 4 ? "> " : "  ";
+         string m5 = _menuFocus == 5 ? "> " : "  ";
++        string m6 = _menuFocus == 6 ? "> " : "  ";
+         string pitchTag = _availablePitches.Count > 0
+             ? $"SWCPICH{PitchId}  ({_pitchSlot + 1}/{_availablePitches.Count})"
+             : "(none)";
+@@ -4381,7 +4396,8 @@ public partial class Main : Node2D
+                $"{m2}away       : {TeamTag(_awayTeamIndex)}\n" +
+                $"{m3}opponent   : {oppTag}\n" +
+                $"{m4}length     : {lengthTag}\n" +
+-               $"{m5}speed      : {speedTag}\n\n" +
++               $"{m5}speed      : {speedTag}\n" +
++               $"{m6}mode       : {(OpenSwos.Sim.Port.SmallSided.Enabled ? "3 v 3  (experimental)" : "11 v 11")}\n\n" +
+                $"up down  focus    <- ->  value    space  start";
+     }
+ 
+diff --git a/game/scripts/Sim/Port/Bench.cs b/game/scripts/Sim/Port/Bench.cs
+index 2de64c8..e4dbcb9 100644
+--- a/game/scripts/Sim/Port/Bench.cs
++++ b/game/scripts/Sim/Port/Bench.cs
+@@ -513,6 +513,11 @@ public static class Bench
+     // ball cleanup so the substitution scene doesn't start mid-action.
+     public static void InvokeBench()
+     {
++        // PORT-ONLY (SmallSided): no bench in the 3v3 prototype — slots 11..15
++        // hold real substitutes that would unghost onto the pitch. Substitutions
++        // for small-sided mode need their own pass (route B).
++        if (SmallSided.Enabled) return;
++
+         InitBench();
+         Memory.WriteWord(Memory.Addr.g_inSubstitutesMenu, 1);
+         CheckForThrowInAndKeepersBall();
+diff --git a/game/scripts/Sim/Port/Kickoff.cs b/game/scripts/Sim/Port/Kickoff.cs
+index 4b246f3..68d54dd 100644
+--- a/game/scripts/Sim/Port/Kickoff.cs
++++ b/game/scripts/Sim/Port/Kickoff.cs
+@@ -230,6 +230,24 @@ public static class Kickoff
+                 // playerNormalStandingAnimTable @ 453234).
+                 PlayerActions.SetPlayerAnimationTable(
+                     spriteAddr, Memory.Addr.playerNormalStandingAnimTable);
++
++                // PORT-ONLY (SmallSided): surplus outfielders become ghosts —
++                // flagged exactly like a red-carded player and parked at the
++                // sent-off spot with dest == pos (no walk-off, drs promotes
++                // in place so the Mode3 arrival wait passes). Runs AFTER the
++                // gameState==21 sentAway/cards reset above so match start
++                // can't unghost them; also re-runs on halftime re-entry.
++                // RNG note: the per-player Rng.NextByte above stays
++                // unconditional, so the stream is untouched either way.
++                if (SmallSided.IsGhostIndex(i))
++                {
++                    Memory.WriteWord(spriteAddr + PlayerSprite.OffSentAway, 1);
++                    Memory.WriteWord(spriteAddr + PlayerSprite.OffCards, -1);
++                    Memory.WriteWord(spriteAddr + PlayerSprite.OffX + 2, Referee.kSentOffPlayerX);
++                    Memory.WriteWord(spriteAddr + PlayerSprite.OffY + 2, Referee.kSentOffPlayerY);
++                    Memory.WriteWord(spriteAddr + PlayerSprite.OffDestX, Referee.kSentOffPlayerX);
++                    Memory.WriteWord(spriteAddr + PlayerSprite.OffDestY, Referee.kSentOffPlayerY);
++                }
+             }
+ 
+             // game.cpp:684-697 — second pass takes the OTHER team's table:
+diff --git a/game/scripts/Sim/Port/SmallSided.cs b/game/scripts/Sim/Port/SmallSided.cs
+new file mode 100644
+index 0000000..b869309
+--- /dev/null
++++ b/game/scripts/Sim/Port/SmallSided.cs
+@@ -0,0 +1,51 @@
++namespace OpenSwos.Sim.Port;
++
++using OpenSwos.SwosVm;
++
++// PORT-ONLY EXPERIMENT — small-sided (3-a-side) match mode. Not in the
++// original game.
++//
++// Route: instead of resizing the 11-per-team sprite pool / tactics tables,
++// the 8 surplus outfielders per team are marked exactly like red-carded
++// players (sentAway = 1, cards = -1) and parked at the sent-off spot
++// (Referee.kSentOffPlayerX/Y) at pitch entry. Every system that already
++// excludes sent-off players then does the right thing for free:
++//
++//   - controlled-player election skips them  (InputControls.cs sentAway gate)
++//   - pass-target election skips them        (UpdatePlayerBeingPassedTo)
++//   - set-piece taker scans skip them        (SetPieces.FindNearestOutfielderToPoint)
++//   - break repositioning skips them         (UpdatePlayers l_check_if_sent_away)
++//   - free-kick wall math shifts around them (cards < 0 treated as red card)
++//   - Mode3 arrival wait passes              (they stand at dest, drs promotes)
++//
++// The remaining holes (in-play tactical repositioning, the port-only
++// re-election stand-in, the renderer, the bench) are patched at their sites,
++// each gated on `Enabled` so 11-a-side behaviour — and the recorded golden
++// traces / RNG stream — stay byte-identical when the mode is off.
++public static class SmallSided
++{
++    // Toggled from the match-setup menu (Main.cs "mode" slot). Read at pitch
++    // entry (Kickoff.InitPlayersBeforeEnteringPitch), so flipping it only
++    // takes effect on the next match start.
++    public static bool Enabled = false;
++
++    // On-pitch players per team including the goalkeeper: GK + 2 outfielders.
++    // Kept players are sprite-table slots 0..OnPitchPerTeam-1 within each
++    // team (slot 0 = keeper, then outfielder ordinals 2, 3 — tactics rows 0
++    // and 1 of whatever formation is selected).
++    public const int OnPitchPerTeam = 3;
++
++    // slotInTeam is the per-team sprite-table index 0..TeamSize-1.
++    public static bool IsGhostIndex(int slotInTeam)
++        => Enabled && slotInTeam >= OnPitchPerTeam;
++
++    // slot is the global sprite-pool slot 0..TotalSlots-1 (0..10 top team,
++    // 11..21 bottom team).
++    public static bool IsGhostGlobalSlot(int slot)
++    {
++        int slotInTeam = slot < PlayerSprite.TeamSize
++            ? slot
++            : slot - PlayerSprite.TeamSize;
++        return IsGhostIndex(slotInTeam);
++    }
++}
+diff --git a/game/scripts/Sim/Port/UpdatePlayers.cs b/game/scripts/Sim/Port/UpdatePlayers.cs
+index 18c8852..d828682 100644
+--- a/game/scripts/Sim/Port/UpdatePlayers.cs
++++ b/game/scripts/Sim/Port/UpdatePlayers.cs
+@@ -273,6 +273,12 @@ public static class UpdatePlayers
+                     for (int s = slotBase + 1; s < slotBase + 11; s++)
+                     {
+                         int sa = PlayerSprite.Base(s);
++                        // PORT-ONLY (SmallSided): never elect a parked ghost —
++                        // with the ball near the left touchline the sent-off
++                        // spot (-20, 449) can be the closest "player".
++                        if (SmallSided.Enabled &&
++                            Memory.ReadSignedWord(sa + PlayerSprite.OffSentAway) != 0)
++                            continue;
+                         short sx = Memory.ReadSignedWord(sa + PlayerSprite.OffX + 2);
+                         short sy = Memory.ReadSignedWord(sa + PlayerSprite.OffY + 2);
+                         int dxF = sx - bxFix;
+@@ -2327,6 +2333,17 @@ public static class UpdatePlayers
+         {
+             if (myTurn)
+             {
++                // PORT-ONLY (SmallSided): the asm's l_check_if_sent_away gate
++                // only exists on the stoppage path below — in-play, this port
++                // would still hand a sent-off ghost a tactical destination on
++                // its round-robin turn and march it back onto the pitch.
++                // Scoped to the 3v3 mode so 11-a-side traces stay identical.
++                if (SmallSided.Enabled &&
++                    Memory.ReadSignedWord(spriteAddr + PlayerSprite.OffSentAway) != 0)
++                {
++                    return;
++                }
++
+                 // l_this_is_substituted_player — updatePlayers.cpp:8806-8883.
+                 // In-progress gate before the destReachedState promotion:
+                 //   8820-8831 — if inGameCounter > 25 → promote (ja).
+-- 
+2.43.0
+
